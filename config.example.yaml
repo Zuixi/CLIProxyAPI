@@ -807,6 +807,20 @@ nonstream-keepalive-interval: 0
 #       - "imagen-3.0-generate-002"
 #       - "imagen-*"
 
+# ZCode provider (Z.ai GLM).
+# ZCode is an OAuth-only provider; run `--zcode-login` and a `auths/zcode-*.json`
+# credential is written automatically, like the kimi OAuth provider. Two account
+# platforms are supported and share the same server-mediated OAuth flow (the
+# callback is hosted by zcode.z.ai, so cross-device login works):
+#   --zcode-provider zai      (default) global Z.ai,  api.z.ai/api/anthropic
+#   --zcode-provider bigmodel          China 智谱,    open.bigmodel.cn/api/anthropic
+# zcode:
+#   ultra-routing: false # optional, default false. When true, the executor may
+#                        # rewrite the coding-plan Anthropic endpoint to the
+#                        # entitlement-gated ZCode ultra gateway if the server
+#                        # publishes a mapping. Unverified against a real entitled
+#                        # account; keep false to always use the pinned endpoint.
+
 # Global OAuth model name aliases (per channel)
 # These aliases rename model IDs for both model listing and request routing.
 # Supported channels: vertex, aistudio, antigravity, claude, codex, kimi, xai, meta.

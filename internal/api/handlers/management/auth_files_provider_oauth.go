@@ -20,9 +20,11 @@ import (
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/auth/kimi"
 	metaauth "github.com/router-for-me/CLIProxyAPI/v7/internal/auth/meta"
 	xaiauth "github.com/router-for-me/CLIProxyAPI/v7/internal/auth/xai"
+	"github.com/router-for-me/CLIProxyAPI/v7/internal/auth/zcode"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/misc"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/pluginhost"
 	"github.com/router-for-me/CLIProxyAPI/v7/internal/util"
+	sdkAuth "github.com/router-for-me/CLIProxyAPI/v7/sdk/auth"
 	coreauth "github.com/router-for-me/CLIProxyAPI/v7/sdk/cliproxy/auth"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 	log "github.com/sirupsen/logrus"
@@ -850,6 +852,126 @@ func (h *Handler) RequestKimiToken(c *gin.Context) {
 		response["expires_in"] = deviceFlow.ExpiresIn
 	}
 	c.JSON(200, response)
+}
+
+var (
+	// newZCodeLogin and newZCodeResolver build the ZCode login and credential
+	// resolver for a provider variant ("zai" global, "bigmodel" China). Both
+	// providers use the same server-mediated cli/init + poll flow. They are
+	// package-level so tests can point them at a fake server.
+	newZCodeLogin    = func(provider string) *zcode.CliLogin { return &zcode.CliLogin{Provider: provider} }
+	newZCodeResolver = func() *zcode.Resolver { return &zcode.Resolver{} }
+)
+
+// zcodeProviderFromQuery reads the optional ?provider= variant (default "zai").
+// Unknown values are rejected rather than silently coerced.
+func zcodeProviderFromQuery(c *gin.Context) (string, error) {
+	if c == nil {
+		return zcode.ProviderZai, nil
+	}
+	return zcode.NormalizeProvider(c.Query("provider"))
+}
+
+// zcodeManagedHTTPClient builds the credential-acquisition client for the
+// management login, honoring the configured proxy-url (matching the CLI path).
+func (h *Handler) zcodeManagedHTTPClient() *http.Client {
+	client := &http.Client{Timeout: 30 * time.Second}
+	if h == nil || h.cfg == nil {
+		return client
+	}
+	sdkCfg := h.cfg.SDKConfig
+	return util.SetProxy(&sdkCfg, client)
+}
+
+// RequestZCodeToken starts the ZCode OAuth login and returns the authorize URL.
+// A background goroutine completes the flow, resolves the static coding-plan
+// credential and saves the auth file (mirroring RequestKimiToken). The optional
+// ?provider=bigmodel query selects the China (Bigmodel) auth-code flow.
+func (h *Handler) RequestZCodeToken(c *gin.Context) {
+	ctx := context.Background()
+	ctx = PopulateAuthContext(ctx, c)
+
+	provider, errProvider := zcodeProviderFromQuery(c)
+	if errProvider != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": errProvider.Error()})
+		return
+	}
+	fmt.Printf("Initializing ZCode authentication (%s)...\n", provider)
+
+	state := fmt.Sprintf("zcd-%d", time.Now().UnixNano())
+
+	login := newZCodeLogin(provider)
+	if login != nil && login.HTTP == nil {
+		login.HTTP = h.zcodeManagedHTTPClient()
+	}
+	flow, errStart := login.Start(ctx)
+	if errStart != nil {
+		log.WithError(errStart).Error("failed to generate ZCode authorization URL")
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to generate authorization url"})
+		return
+	}
+	authURL := ""
+	if flow != nil {
+		authURL = flow.AuthorizeURL
+	}
+
+	RegisterOAuthSession(state, "zcode")
+
+	go func() {
+		pollCtx, cancelPoll := context.WithCancel(ctx)
+		defer cancelPoll()
+		go watchOAuthSessionCancel(pollCtx, cancelPoll, state, "zcode")
+
+		fmt.Println("Waiting for authorization...")
+		tokens, errComplete := login.Complete(pollCtx, flow, zcode.LoginTimeout)
+		if errComplete != nil {
+			if !IsOAuthSessionPending(state, "zcode") {
+				return
+			}
+			SetOAuthSessionError(state, oauthSessionErrorWithCause("Authentication failed", errComplete))
+			fmt.Printf("Authentication failed: %v\n", errComplete)
+			return
+		}
+		if !IsOAuthSessionPending(state, "zcode") {
+			return
+		}
+
+		resolver := newZCodeResolver()
+		if resolver != nil && resolver.HTTP == nil {
+			resolver.HTTP = h.zcodeManagedHTTPClient()
+		}
+		cred, errResolve := resolver.ResolveCredential(pollCtx, tokens.AccessToken, provider)
+		if errResolve != nil {
+			if !IsOAuthSessionPending(state, "zcode") {
+				return
+			}
+			SetOAuthSessionError(state, oauthSessionErrorWithCause("Authentication failed", errResolve))
+			fmt.Printf("Authentication failed: %v\n", errResolve)
+			return
+		}
+		cred.JWT = tokens.JWT
+		cred.UserID = tokens.UserID
+
+		// Reuse the shared credential builder so the auth file matches the CLI
+		// login runner exactly (Attributes api_key/base_url/header:* and Metadata
+		// type/api_key/secret/jwt/user_id/device_mid).
+		record := sdkAuth.BuildZCodeAuth(cred, cred.JWT, cred.UserID, provider)
+		if errGuard := guardOAuthSessionPendingForSave(state, "zcode"); errGuard != nil {
+			return
+		}
+		savedPath, errSave := h.saveTokenRecord(ctx, record)
+		if errSave != nil {
+			log.WithError(errSave).Error("failed to save ZCode authentication tokens")
+			SetOAuthSessionError(state, "Failed to save authentication tokens")
+			return
+		}
+
+		fmt.Printf("Authentication successful! Token saved to %s\n", savedPath)
+		fmt.Println("You can now use ZCode services through this CLI")
+		CompleteOAuthSession(state)
+	}()
+
+	c.JSON(http.StatusOK, gin.H{"status": "ok", "url": authURL, "state": state})
 }
 
 // watchOAuthSessionCancel cancels pollCtx once the OAuth session is no longer pending.

@@ -120,6 +120,8 @@ func main() {
 	var discoverServiceType string
 	var discoverInclude []string
 	var discoverExclude []string
+	var zcodeLogin bool
+	var zcodeProvider string
 	var vertexImport string
 	var vertexImportPrefix string
 	var configPath string
@@ -147,6 +149,8 @@ func main() {
 	flag.StringVar(&discoverServiceType, "discover-service-type", "", "DNS-SD service type for LAN discovery (default _ai-gateway._tcp)")
 	flag.Func("discover-include", "Comma-separated interface names to scan during LAN discovery", appendCSV(&discoverInclude))
 	flag.Func("discover-exclude", "Comma-separated interface names to skip during LAN discovery", appendCSV(&discoverExclude))
+	flag.BoolVar(&zcodeLogin, "zcode-login", false, "Login to ZCode using OAuth")
+	flag.StringVar(&zcodeProvider, "zcode-provider", "zai", "ZCode OAuth provider: \"zai\" (global) or \"bigmodel\" (China)")
 	flag.StringVar(&configPath, "config", DefaultConfigPath, "Configure File Path")
 	flag.StringVar(&vertexImport, "vertex-import", "", "Import Vertex service account key JSON file")
 	flag.StringVar(&vertexImportPrefix, "vertex-import-prefix", "", "Prefix for Vertex model namespacing (use with -vertex-import)")
@@ -650,7 +654,7 @@ func main() {
 		CallbackPort: oauthCallbackPort,
 	}
 
-	commandMode := vertexImport != "" || antigravityLogin || codexLogin || codexDeviceLogin || claudeLogin || kimiLogin || xaiLogin || devinLogin || metaLogin
+	commandMode := vertexImport != "" || antigravityLogin || codexLogin || codexDeviceLogin || claudeLogin || kimiLogin || xaiLogin || devinLogin || metaLogin || zcodeLogin
 	cloudConfigMissing := isCloudDeploy && !configFileExists
 	homeMode := configLoadedFromHome || (cfg != nil && cfg.Home.Enabled)
 	exampleAPIKeySafeMode := shouldEnableExampleAPIKeySafeMode(cfg, commandMode, tuiMode, standalone, cloudConfigMissing, homeMode)
@@ -728,6 +732,8 @@ func main() {
 		cmd.DoDevinLogin(cfg, options)
 	} else if metaLogin {
 		cmd.DoMetaLogin(cfg, options)
+	} else if zcodeLogin {
+		cmd.DoZCodeLogin(cfg, options, zcodeProvider)
 	} else {
 		// In cloud deploy mode without config file, just wait for shutdown signals
 		if isCloudDeploy && !configFileExists {
