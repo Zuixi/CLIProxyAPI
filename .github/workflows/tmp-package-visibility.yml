@@ -1,0 +1,40 @@
+name: tmp-package-visibility
+
+# Throwaway probe: can a workflow token flip the user-owned GHCR package to
+# public, and does the anonymous pull then work? Deleted right after the answer.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: PATCH with MAIN_SYNC_TOKEN
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.MAIN_SYNC_TOKEN }}
+        run: |
+          echo "--- MAIN_SYNC_TOKEN ---"
+          gh api --method PATCH "/user/packages/container/cli-proxy-api" -f visibility=public
+
+      - name: PATCH with GITHUB_TOKEN
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo "--- GITHUB_TOKEN ---"
+          gh api --method PATCH "/user/packages/container/cli-proxy-api" -f visibility=public
+
+      - name: Report visibility (anonymous registry request)
+        run: |
+          set -uo pipefail
+          for t in GITHUB_TOKEN MAIN_SYNC_TOKEN; do :; done
+          code=$(curl -s -o /tmp/out -w '%{http_code}' https://ghcr.io/v2/zuixi/cli-proxy-api/tags/list)
+          echo "anonymous GHCR tags/list HTTP $code"
+          head -c 300 /tmp/out; echo
+          if [ "$code" = "200" ]; then echo "RESULT: package is PUBLIC"; else echo "RESULT: package is still PRIVATE"; fi
