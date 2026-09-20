@@ -9,7 +9,13 @@ codex_candidate="$(mktemp)"
 trap 'rm -f "$codex_candidate"' EXIT
 
 git fetch --depth 1 "$models_repository" "$models_ref"
-git show FETCH_HEAD:models.json > "$catalog_dir/models.json"
+# models.json is intentionally NOT overwritten from the remote catalog: that
+# catalog does not publish the local-only providers (zcode, meta), so a wholesale
+# replace would silently drop their embedded definitions and the build would
+# answer "unknown provider for model ...". The runtime updater refreshes the
+# catalog at startup and carries the local-only sections over, so releasing the
+# catalog committed at the tag keeps both freshness and the local-only models.
+# (Do not restore this line unless zcode/meta are published to the models repo.)
 
 if git show FETCH_HEAD:codex_client_models.json > "$codex_candidate" &&
   go run ./cmd/validate_codex_models --file "$codex_candidate"; then
