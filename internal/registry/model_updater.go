@@ -122,9 +122,12 @@ func tryRefreshModels(ctx context.Context, label string) {
 		return
 	}
 
-	if len(parsed.Meta) == 0 && oldData != nil && len(oldData.Meta) > 0 {
-		parsed.Meta = oldData.Meta
-	}
+	// The remote catalog does not publish every provider (zcode, and currently
+	// meta): a wholesale replace would silently drop the embedded definitions and
+	// leave "unknown provider for model ..." until restart. Preserve local-only
+	// sections the remote omits. This runs before change detection so a
+	// carried-over section is not reported as changed on every refresh.
+	carryOverLocalOnlySections(oldData, parsed)
 
 	// Detect changes before updating store.
 	changed := detectChangedProviders(oldData, parsed)
@@ -194,6 +197,22 @@ func fetchModelsFromRemote(ctx context.Context) (*staticModelsJSON, string) {
 	return nil, ""
 }
 
+// carryOverLocalOnlySections retains sections that exist in the local catalog
+// but are absent from the fetched one. Currently only zcode is local-only; keep
+// this explicit rather than a generic merge so that a genuine upstream removal
+// of a managed provider (claude/gemini/...) is still reflected.
+func carryOverLocalOnlySections(local, remote *staticModelsJSON) {
+	if local == nil || remote == nil {
+		return
+	}
+	if len(remote.ZCode) == 0 && len(local.ZCode) > 0 {
+		remote.ZCode = local.ZCode
+	}
+	if len(remote.Meta) == 0 && len(local.Meta) > 0 {
+		remote.Meta = local.Meta
+	}
+}
+
 // detectChangedProviders compares two model catalogs and returns provider names
 // whose model definitions differ. Gemini changes affect both Gemini protocols,
 // while Codex tiers (free/team/plus/pro) are grouped under one "codex" provider.
@@ -223,6 +242,7 @@ func detectChangedProviders(oldData, newData *staticModelsJSON) []string {
 		{"xai", oldData.XAI, newData.XAI},
 		{"devin", oldData.Devin, newData.Devin},
 		{"meta", oldData.Meta, newData.Meta},
+		{"zcode", oldData.ZCode, newData.ZCode},
 	}
 
 	seen := make(map[string]bool, len(sections))
@@ -337,6 +357,10 @@ func validateModelsCatalog(data *staticModelsJSON) error {
 	requiredSections := []struct {
 		name   string
 		models []*ModelInfo
+		// optional sections may be absent from a catalog that does not manage
+		// them (the remote catalog omits zcode); an absent optional section is
+		// validated without the empty-section warning.
+		optional bool
 	}{
 		{name: "claude", models: data.Claude},
 		{name: "gemini", models: data.Gemini},
@@ -350,9 +374,13 @@ func validateModelsCatalog(data *staticModelsJSON) error {
 		{name: "antigravity", models: data.Antigravity},
 		{name: "xai", models: data.XAI},
 		{name: "meta", models: data.Meta},
+		{name: "zcode", models: data.ZCode, optional: true},
 	}
 
 	for _, section := range requiredSections {
+		if section.optional && len(section.models) == 0 {
+			continue
+		}
 		if err := validateModelSection(section.name, section.models); err != nil {
 			return err
 		}

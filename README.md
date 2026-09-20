@@ -117,6 +117,7 @@ PackyCode provides special discounts for our software users: register using <a h
 - OpenAI Codex support (GPT models) via OAuth login
 - Claude Code support via OAuth login
 - Grok Build support via OAuth login
+- ZCode (Z.ai GLM) support via OAuth login
 - Streaming, non-streaming, and WebSocket responses where supported
 - Function calling/tools support
 - Multimodal input support (text and images)
@@ -133,6 +134,21 @@ PackyCode provides special discounts for our software users: register using <a h
 ## Getting Started
 
 CLIProxyAPI Guides: [https://help.router-for.me/](https://help.router-for.me/)
+
+## ZCode login
+
+ZCode (Z.ai GLM) is supported via OAuth, like Kimi. Two account platforms are
+supported and share the same server-mediated login flow (the callback is hosted by
+`zcode.z.ai`, so the authorization URL works from any device):
+
+- `--zcode-provider zai` (default) — global Z.ai account, models served from
+  `https://api.z.ai/api/anthropic`.
+- `--zcode-provider bigmodel` — BigModel/智谱 (China) account, models served from
+  `https://open.bigmodel.cn/api/anthropic`.
+
+Run the server with `--zcode-login`
+to authenticate with your Z.ai account; the credentials are saved automatically to
+`auths/zcode-*.json`. No API key or extra config is required.
 
 ## Management API
 
