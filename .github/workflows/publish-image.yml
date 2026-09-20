@@ -1,12 +1,12 @@
 name: publish-image
 
-# Publishes ghcr.io/zuixi/cli-proxy-api from a `zuixi-v*` tag.
+# Publishes ghcr.io/zuixi/cli-proxy-api from a `zuixi-*` tag.
 #
 # The tag prefix is deliberate: the upstream `docker-image.yml` triggers on `v*`
 # and pushes to `eceasy/cli-proxy-api` (the upstream maintainer's Docker Hub
 # repository), so a bare `v*` tag must never exist in this fork.
 #
-# Manual re-run: gh workflow run publish-image.yml --ref zuixi-v0.1.0
+# Manual re-run: gh workflow run publish-image.yml --ref zuixi-0.1.0
 # (VERSION comes from github.ref_name, so a manual run has to target a tag.)
 #
 # Unlike upstream's image workflow this does NOT run
@@ -19,7 +19,7 @@ name: publish-image
 on:
   push:
     tags:
-      - "zuixi-v*"
+      - "zuixi-*"
   workflow_dispatch:
 
 permissions:
