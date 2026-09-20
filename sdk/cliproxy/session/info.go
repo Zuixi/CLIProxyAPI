@@ -37,7 +37,7 @@ type SessionTreeInfo = SessionInfo
 //  2. Claude Code metadata.user_id session
 //  3. Session-Id / Session_id (Codex and compatible clients)
 //  4. X-Http-Session-Id (Antigravity CLI)
-//  5. X-Session-ID / X-Session-Affinity / X-Slot-Session-Id
+//  5. X-Session-ID / X-Opencode-Session / X-Session-Affinity / X-Slot-Session-Id
 //  6. X-Conversation-Id / X-Thread-Id / X-Client-Request-Id
 //  7. Gemini cachedContent
 //  8. OpenAI thread_id
@@ -443,6 +443,37 @@ func ExtractSessionInfo(headers http.Header, payload []byte, metadata map[string
 			info.AgentName = "subagent"
 		} else if parentCandidate != "" && parentCandidate != sid {
 			info.ParentSessionID = "header:" + parentCandidate
+			info.AgentName = "subagent"
+		} else {
+			info.AgentName = "main"
+		}
+		return finalizeSessionInfo(info)
+	}
+	// The OpenCode gateway's own session header beats bare affinity because native
+	// OpenCode gateway clients stopped sending x-session-affinity.
+	if sid := sessionHeaderValue(headers, "X-Opencode-Session"); sid != "" {
+		info.ClientType = "opencode"
+		info.SessionID = "opencode:" + sid
+		// A parent reference must carry the namespace the parent was bound under, or the
+		// selector cannot find its binding: X-Parent-Session-Affinity names a parent that
+		// registered as affinity:<id>. The generic parent headers keep this branch's own
+		// namespace, matching the sibling session branches.
+		parentPrefix := "opencode:"
+		parentSID := sessionHeaderValue(headers, "X-Parent-Session-Affinity")
+		if parentSID != "" {
+			parentPrefix = "affinity:"
+		} else {
+			for _, parentHeader := range []string{"X-Parent-Session-ID", "X-Parent-ID", "X-Parent-Id"} {
+				if parentSID = sessionHeaderValue(headers, parentHeader); parentSID != "" {
+					break
+				}
+			}
+		}
+		if parentSID != "" && parentSID != sid {
+			info.ParentSessionID = parentPrefix + parentSID
+			info.AgentName = "subagent"
+		} else if parentCandidate != "" && parentCandidate != sid {
+			info.ParentSessionID = parentPrefix + parentCandidate
 			info.AgentName = "subagent"
 		} else {
 			info.AgentName = "main"

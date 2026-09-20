@@ -46,7 +46,7 @@ var canonicalUUIDPattern = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0
 var CandidateSessionPrefixes = []string{
 	"lcp:v1:", "lcp:",
 	"codex:", "claude:", "header:", "session:",
-	"affinity:", "slot:", "task:", "conv:",
+	"affinity:", "opencode:", "slot:", "task:", "conv:",
 	"thread:", "clientreq:", "geminicache:",
 	"pck:", "user:", "execution:", "agy:", "derived:",
 }
@@ -59,9 +59,88 @@ var knownSessionPrefixes = []string{
 	"lcp:v1:", "lcp:",
 	"ctx:v1:", "ctx:",
 	"codex:", "claude:", "header:", "session:",
-	"affinity:", "slot:", "task:", "conv:",
+	"affinity:", "opencode:", "slot:", "task:", "conv:",
 	"thread:", "clientreq:", "geminicache:",
 	"pck:", "user:", "execution:", "agy:", "derived:",
+}
+
+// openCodeFamilyNamespaces lists the namespaces that describe one client family.
+// X-Session-Affinity and X-Opencode-Session are two headers of the same OpenCode client, so
+// a parent reference may name the family member the parent did not bind under. Both the
+// parent lookup and the hierarchy classification must treat the group as one family, which
+// is why the family is listed once, here.
+var openCodeFamilyNamespaces = []string{"opencode:", "affinity:"}
+
+// SessionNamespaceFamily returns the client-family key of a session namespace. Members of one
+// family share a key, so a mixed OpenCode/affinity parent pair is classified as a hierarchy
+// instead of as two unrelated prefixes.
+func SessionNamespaceFamily(namespace string) string {
+	for _, member := range openCodeFamilyNamespaces {
+		if member == namespace {
+			return openCodeFamilyNamespaces[0]
+		}
+	}
+	return namespace
+}
+
+// openCodeSiblingNamespace returns the other namespace of the OpenCode family, or "" for any
+// namespace outside it.
+func openCodeSiblingNamespace(namespace string) string {
+	if SessionNamespaceFamily(namespace) != openCodeFamilyNamespaces[0] {
+		return ""
+	}
+	for _, member := range openCodeFamilyNamespaces {
+		if member != namespace {
+			return member
+		}
+	}
+	return ""
+}
+
+// sessionNamespace returns the leading registered protocol prefix of id, or "" when the
+// id carries none.
+func sessionNamespace(id string) string {
+	for _, prefix := range CandidateSessionPrefixes {
+		if strings.HasPrefix(id, prefix) {
+			return prefix
+		}
+	}
+	return ""
+}
+
+// ParentNamespaceAlias returns the other parent identity a child session should try when
+// its declared parent reference misses, or "" when there is none.
+//
+// A child writes the parent reference itself, so the namespace in it reflects the parent
+// header the child sent, not the namespace the parent bound under. X-Session-Affinity and
+// X-Opencode-Session are two headers of one client family, and a parent may have bound
+// under either: a parent that sent both registers under the OpenCode prefix because that
+// signal has the higher extraction priority, while a parent that sent only the legacy
+// header registers under the affinity prefix. A child cannot tell the two apart, so both
+// family members are tried instead of inferring one from the parent header name.
+//
+// Only the two OpenCode namespaces are exchanged: they describe one client family and are
+// the only pair extraction can disagree on. Trying unrelated namespaces (codex:, header:,
+// slot:, ...) could resolve a parent reference to an unrelated session that merely shares
+// the bare id.
+func ParentNamespaceAlias(primaryID, parentID string) string {
+	parentNamespace := sessionNamespace(parentID)
+	if openCodeSiblingNamespace(sessionNamespace(primaryID)) == "" {
+		return ""
+	}
+	sibling := openCodeSiblingNamespace(parentNamespace)
+	if sibling == "" {
+		return ""
+	}
+	bare := strings.TrimSpace(strings.TrimPrefix(parentID, parentNamespace))
+	if bare == "" {
+		return ""
+	}
+	alias := sibling + bare
+	if alias == parentID {
+		return ""
+	}
+	return alias
 }
 
 // NormalizeToCanonicalUUID deterministically normalizes any session identifier to a
@@ -353,6 +432,7 @@ func hasExplicitSession(headers map[string][]string, payload []byte) bool {
 		"X-Openai-Subagent",
 		"X-Http-Session-Id",
 		"X-Session-ID",
+		"X-Opencode-Session",
 		"X-Session-Affinity",
 		"X-Parent-Session-ID",
 		"X-Parent-Session-Id",

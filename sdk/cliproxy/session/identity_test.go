@@ -150,6 +150,11 @@ func TestEnrichSkipsDerivationForExplicitSessions(t *testing.T) {
 			headers: http.Header{"X-Session-Affinity": []string{"opencode-session"}},
 		},
 		{
+			name:    "OpenCode session header",
+			payload: []byte(`{"messages":[{"role":"user","content":"hello"}]}`),
+			headers: http.Header{"X-Opencode-Session": []string{"opencode-session"}},
+		},
+		{
 			name:    "Responses conversation object",
 			payload: []byte(`{"conversation":{"id":"conversation-session"},"messages":[{"role":"user","content":"hello"}]}`),
 		},
@@ -493,7 +498,7 @@ func TestNormalizeToCanonicalUUID(t *testing.T) {
 		"lcp:v1:", "lcp:",
 		"ctx:v1:", "ctx:",
 		"codex:", "claude:", "header:", "session:",
-		"affinity:", "slot:", "task:", "conv:",
+		"affinity:", "opencode:", "slot:", "task:", "conv:",
 		"thread:", "clientreq:", "geminicache:",
 		"pck:", "user:", "execution:", "agy:", "derived:",
 		"slot:   ",
@@ -619,5 +624,137 @@ func TestNormalizeToCanonicalUUID(t *testing.T) {
 	derivedUUID := "derived:ctx:v1:01a07e72-c84d-7fd3-8207-d217b41cc649"
 	if got := NormalizeToCanonicalUUID(derivedUUID); got != "01a07e72-c84d-7fd3-8207-d217b41cc649" {
 		t.Fatalf("NormalizeToCanonicalUUID(%q) = %q, want 01a07e72-c84d-7fd3-8207-d217b41cc649", derivedUUID, got)
+	}
+}
+
+// The OpenCode gateway signal must be a registered prefix in both tables: affinity
+// lookup expands bare IDs with CandidateSessionPrefixes, and canonical projection
+// strips knownSessionPrefixes. An unregistered prefix strands its bindings, because
+// LookupAffinity never expands to it and the canonical UUID differs from the same
+// logical session named through another namespace.
+func TestOpenCodeSessionPrefixRegistered(t *testing.T) {
+	t.Parallel()
+
+	registered := false
+	for _, prefix := range CandidateSessionPrefixes {
+		if prefix == "opencode:" {
+			registered = true
+			break
+		}
+	}
+	if !registered {
+		t.Fatalf("CandidateSessionPrefixes is missing %q: %v", "opencode:", CandidateSessionPrefixes)
+	}
+
+	const bare = "ses_opencode_alias"
+	opencodeID := NormalizeToCanonicalUUID("opencode:" + bare)
+	if opencodeID == "" {
+		t.Fatal("NormalizeToCanonicalUUID(opencode:<id>) must not be empty")
+	}
+	if affinityID := NormalizeToCanonicalUUID("affinity:" + bare); opencodeID != affinityID {
+		t.Fatalf("namespaces must project to one canonical id: opencode=%q affinity=%q", opencodeID, affinityID)
+	}
+	if otherID := NormalizeToCanonicalUUID("opencode:ses_other"); otherID == opencodeID {
+		t.Fatalf("distinct opencode sessions share a canonical id: %q", opencodeID)
+	}
+}
+
+// A parent reference is written by the child, so its namespace can differ from the one the
+// parent bound under. Only the OpenCode family is exchanged: guessing a codex/header/slot
+// sibling would let a parent reference resolve to an unrelated session with the same bare id.
+func TestParentNamespaceAlias(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		primaryID string
+		parentID  string
+		want      string
+	}{
+		{
+			name:      "open code child referencing an affinity parent",
+			primaryID: "opencode:child",
+			parentID:  "affinity:parent",
+			want:      "opencode:parent",
+		},
+		{
+			name:      "affinity child referencing an open code parent",
+			primaryID: "affinity:child",
+			parentID:  "opencode:parent",
+			want:      "affinity:parent",
+		},
+		{
+			name:      "open code child also tries affinity for an open code parent",
+			primaryID: "opencode:child",
+			parentID:  "opencode:parent",
+			want:      "affinity:parent",
+		},
+		{
+			name:      "affinity child also tries open code for an affinity parent",
+			primaryID: "affinity:child",
+			parentID:  "affinity:parent",
+			want:      "opencode:parent",
+		},
+		{
+			name:      "codex child must not guess an affinity parent in its own namespace",
+			primaryID: "codex:child",
+			parentID:  "affinity:parent",
+		},
+		{
+			name:      "generic header child must not guess an affinity parent",
+			primaryID: "header:child",
+			parentID:  "affinity:parent",
+		},
+		{
+			name:      "bare parent id carries no namespace to swap",
+			primaryID: "opencode:child",
+			parentID:  "parent",
+		},
+		{
+			name:      "bare child id carries no namespace to swap",
+			primaryID: "child",
+			parentID:  "affinity:parent",
+		},
+		{
+			name:      "empty parent id",
+			primaryID: "opencode:child",
+			parentID:  "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			if got := ParentNamespaceAlias(tt.primaryID, tt.parentID); got != tt.want {
+				t.Fatalf("ParentNamespaceAlias(%q, %q) = %q, want %q", tt.primaryID, tt.parentID, got, tt.want)
+			}
+		})
+	}
+}
+
+// Namespaces that describe one client family must share a family key, so hierarchy
+// classification and the parent lookup agree; unrelated namespaces must stay distinct.
+func TestSessionNamespaceFamily(t *testing.T) {
+	t.Parallel()
+
+	for _, a := range openCodeFamilyNamespaces {
+		for _, b := range openCodeFamilyNamespaces {
+			if SessionNamespaceFamily(a) != SessionNamespaceFamily(b) {
+				t.Fatalf("SessionNamespaceFamily(%q) = %q, want the same key as %q", a, SessionNamespaceFamily(a), b)
+			}
+		}
+	}
+	if family := SessionNamespaceFamily(openCodeFamilyNamespaces[0]); family == "" {
+		t.Fatal("the OpenCode family must have a non-empty key")
+	}
+
+	for _, namespace := range []string{"codex:", "header:", "claude:", "slot:", ""} {
+		if got := SessionNamespaceFamily(namespace); got != namespace {
+			t.Fatalf("SessionNamespaceFamily(%q) = %q, want the namespace unchanged", namespace, got)
+		}
+	}
+	if SessionNamespaceFamily("codex:") == SessionNamespaceFamily("header:") {
+		t.Fatal("unrelated namespaces must not share a family key")
 	}
 }

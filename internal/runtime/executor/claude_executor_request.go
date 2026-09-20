@@ -1062,6 +1062,16 @@ func applyClaudeHeadersWithNativeProfile(
 	}
 	applyBetaHeader()
 
+	// The OpenCode gateway rejects requests without its own session header; a client that
+	// did not name its provider "opencode*" only sent x-session-affinity. Derive the value
+	// from the routing identity annotated on the context (extracted before cloaking on the
+	// original request): re-extracting from this body would let a CPA-injected fake
+	// metadata.user_id (cloak / fingerprint identity) outrank the caller's own session.
+	openCodeRoutingSession := util.SessionIDFromContext(r.Context())
+	if openCodeRoutingSession == "" {
+		openCodeRoutingSession = cliproxyauth.ExtractSessionID(incomingHeaders, body, nil)
+	}
+
 	if preserveCallerFingerprint {
 		defaultAccept := "application/json"
 		defaultAcceptEncoding := "gzip, deflate, br, zstd"
@@ -1107,6 +1117,9 @@ func applyClaudeHeadersWithNativeProfile(
 		} else if stream {
 			restoreCallerTransport()
 		}
+		// Caller-owned mode still targets a gateway that requires its session header,
+		// and it is functional routing, not a fingerprint default.
+		helps.ApplyOpenCodeSessionHeaders(r, r.URL.String(), "", incomingHeaders, openCodeRoutingSession)
 		return nil
 	}
 
@@ -1171,6 +1184,9 @@ func applyClaudeHeadersWithNativeProfile(
 			r.Header.Set(hdr, val)
 		}
 	}
+	// The OpenCode gateway rejects requests without its own session header; a client that
+	// did not name its provider "opencode*" only sent x-session-affinity.
+	helps.ApplyOpenCodeSessionHeaders(r, r.URL.String(), "", incomingHeaders, openCodeRoutingSession)
 	// Per-request UUID, matches Claude Code's x-client-request-id for first-party API.
 	// identityHeader prefers the incoming value for a confirmed client, so a confirmed
 	// helper keeps its own native request ID and this fresh UUID only covers a caller

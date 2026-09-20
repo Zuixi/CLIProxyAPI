@@ -1043,8 +1043,16 @@ func (s *SessionAffinitySelector) Pick(ctx context.Context, provider, model stri
 	}
 	isSubagent := !isFork && isSubagentSession(primaryID, fallbackID)
 	fallbackKey := ""
+	var fallbackKeys []string
 	if fallbackID != "" && fallbackID != primaryID {
 		fallbackKey = provider + "::" + fallbackID + "::" + modelKey
+		fallbackKeys = append(fallbackKeys, fallbackKey)
+		// The child writes the parent reference, so its namespace is what the child's parent
+		// header implied, not necessarily the one the parent bound under. This sibling
+		// identity is looked up only after the declared reference misses.
+		if alias := cliproxysession.ParentNamespaceAlias(primaryID, fallbackID); alias != "" {
+			fallbackKeys = append(fallbackKeys, provider+"::"+alias+"::"+modelKey)
+		}
 	}
 	bind := func(authID string) {
 		if fallbackKey != "" && !isSubagent && !isFork {
@@ -1075,8 +1083,14 @@ func (s *SessionAffinitySelector) Pick(ctx context.Context, provider, model stri
 		return auth, nil
 	}
 
-	if fallbackKey != "" {
-		if cachedAuthID, ok := s.cache.Get(fallbackKey); ok {
+	if len(fallbackKeys) > 0 {
+		cachedAuthID, hit := "", false
+		for _, candidate := range fallbackKeys {
+			if cachedAuthID, hit = s.cache.Get(candidate); hit {
+				break
+			}
+		}
+		if hit {
 			for _, auth := range available {
 				if auth.ID == cachedAuthID {
 					if !isSubagent || s.subagentAffinity {
@@ -1545,14 +1559,15 @@ func CanonicalSessionID(headers http.Header, payload []byte, metadata map[string
 //  2. Claude Code metadata.user_id session
 //  3. Session-Id / Session_id (Codex and compatible clients)
 //  4. X-Session-ID
-//  5. X-Session-Affinity (OpenCode)
-//  6. X-Client-Request-Id (pi Responses)
-//  7. session_id / sessionId
-//  8. prompt_cache_key, with conversation / conversation.id as an alias
-//  9. metadata.user_id and conversation_id legacy body fields
-//  10. explicit execution session metadata
-//  11. stable context-derived session identity
-//  12. stable hash from initial message content
+//  5. X-Opencode-Session (OpenCode gateway clients)
+//  6. X-Session-Affinity (OpenCode)
+//  7. X-Client-Request-Id (pi Responses)
+//  8. session_id / sessionId
+//  9. prompt_cache_key, with conversation / conversation.id as an alias
+//  10. metadata.user_id and conversation_id legacy body fields
+//  11. explicit execution session metadata
+//  12. stable context-derived session identity
+//  13. stable hash from initial message content
 func ExtractSessionID(headers http.Header, payload []byte, metadata map[string]any) string {
 	primary, _ := extractSessionIDs(headers, payload, metadata)
 	return primary
