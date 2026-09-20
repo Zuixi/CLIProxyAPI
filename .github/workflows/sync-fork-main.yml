@@ -1,0 +1,84 @@
+name: sync-fork-main
+
+# Keeps the fork's `main` a pure mirror of router-for-me/CLIProxyAPI:main.
+#
+# This file lives on `dev` (the default branch) because scheduled workflows only
+# run from the default branch, and `main` must stay free of local commits.
+# The push to `main` is done with MAIN_SYNC_TOKEN: a fine-grained PAT running as
+# the repo admin, which is the bypass actor on the `main-is-upstream-mirror`
+# ruleset. The workflow's own GITHUB_TOKEN is not a repo role and is therefore
+# blocked by that ruleset, so it is used only for reads and issue writes.
+
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: sync-fork-main
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  issues: write
+
+env:
+  UPSTREAM: router-for-me/CLIProxyAPI
+  MIRROR_BRANCH: main
+  DRIFT_ISSUE_TITLE: fork main drift detected
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fast-forward fork main to upstream main
+        env:
+          GH_TOKEN: ${{ secrets.MAIN_SYNC_TOKEN }}
+        run: |
+          set -euo pipefail
+          gh repo sync "$GITHUB_REPOSITORY" --source "$UPSTREAM" -b "$MIRROR_BRANCH"
+
+      - name: Compare fork main with upstream main
+        id: compare
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          read -r status ahead behind <<<"$(gh api \
+            "repos/$GITHUB_REPOSITORY/compare/$MIRROR_BRANCH...$UPSTREAM:$MIRROR_BRANCH" \
+            --jq '[.status,.ahead_by,.behind_by]|@tsv')"
+          {
+            echo "status=$status"
+            echo "ahead_by=$ahead"
+            echo "behind_by=$behind"
+          } >> "$GITHUB_OUTPUT"
+          echo "$MIRROR_BRANCH vs $UPSTREAM/$MIRROR_BRANCH: status=$status ahead=$ahead behind=$behind"
+
+      - name: Report drift and fail
+        if: steps.compare.outputs.status != 'identical'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          STATUS: ${{ steps.compare.outputs.status }}
+          AHEAD: ${{ steps.compare.outputs.ahead_by }}
+          BEHIND: ${{ steps.compare.outputs.behind_by }}
+        run: |
+          set -euo pipefail
+          if [ "$BEHIND" -gt 0 ]; then
+            reason="\`$MIRROR_BRANCH\` carries $BEHIND commit(s) that \`$UPSTREAM\` does not have: the mirror branch is no longer a pure mirror, so the \`main-is-upstream-mirror\` ruleset was bypassed."
+          else
+            reason="\`$MIRROR_BRANCH\` is still $AHEAD commit(s) behind \`$UPSTREAM\` (status \`$STATUS\`): the fast-forward did not complete."
+          fi
+          {
+            echo "$reason"
+            echo
+            echo "Fix by hand, then re-run the \`sync-fork-main\` workflow."
+          } >> "$GITHUB_STEP_SUMMARY"
+          body="$reason"$'\n\n'"Fix by hand, then re-run the \`sync-fork-main\` workflow."
+          number=$(gh issue list --repo "$GITHUB_REPOSITORY" --state open \
+            --search "$DRIFT_ISSUE_TITLE in:title" --json number --jq '.[0].number // empty')
+          if [ -n "$number" ]; then
+            gh issue comment "$number" --repo "$GITHUB_REPOSITORY" --body "$body"
+          else
+            gh issue create --repo "$GITHUB_REPOSITORY" --title "$DRIFT_ISSUE_TITLE" --body "$body"
+          fi
+          exit 1
