@@ -21,6 +21,7 @@ func TestArgvEnablesBoolFlag(t *testing.T) {
 		{name: "stops at terminator", args: []string{"--", "--discover-json"}, flag: "discover-json", want: false},
 		{name: "stops at non-flag", args: []string{"foo", "--discover-json"}, flag: "discover-json", want: false},
 		{name: "skips config value", args: []string{"--config", "config.yaml", "--discover-json"}, flag: "discover-json", want: true},
+		{name: "zcode-login does not swallow the next boolean flag", args: []string{"--zcode-login", "--tui"}, flag: "tui", want: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
