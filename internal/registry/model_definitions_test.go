@@ -141,6 +141,61 @@ func TestGetZCodeModels_DeclareThinking(t *testing.T) {
 		}
 	}
 }
+
+// The zcode catalog is local-only (the remote catalog omits zcode), so nothing
+// self-corrects it. These expectations are pinned to the upstream Anthropic
+// endpoint: /v1/models for ids and creation times, and a max_tokens probe where
+// every model accepts up to 131072 and rejects more with error 1210
+// ("限制数值范围[1,131072]"). Context windows follow the ZCode client catalog and
+// the Z.AI docs; zero_allowed is false for the effort-only GLM-5.2/5.3 family,
+// which cannot disable reasoning.
+func TestGetZCodeModels_LimitsMatchUpstream(t *testing.T) {
+	want := map[string]struct {
+		context int
+		output  int
+		zero    bool
+	}{
+		"glm-4.5":        {131072, 98304, true},
+		"glm-4.5-air":    {131072, 98304, true},
+		"glm-4.6":        {204800, 131072, true},
+		"glm-4.7":        {204800, 131072, true},
+		"glm-5":          {204800, 131072, true},
+		"glm-5-turbo":    {200000, 131072, true},
+		"glm-5.1":        {200000, 131072, true},
+		"glm-5.2":        {1000000, 131072, false},
+		"glm-5.3":        {1000000, 131072, false},
+		"glm-5.3-flash":  {1000000, 131072, false},
+		"glm-5.3-flashx": {1000000, 131072, false},
+	}
+
+	models := GetZCodeModels()
+	if len(models) != len(want) {
+		t.Fatalf("zcode model count = %d, want %d", len(models), len(want))
+	}
+	for _, m := range models {
+		if m == nil {
+			t.Fatal("nil zcode model entry")
+		}
+		exp, ok := want[m.ID]
+		if !ok {
+			t.Errorf("unexpected zcode model %q", m.ID)
+			continue
+		}
+		if m.ContextLength != exp.context {
+			t.Errorf("%s context_length = %d, want %d", m.ID, m.ContextLength, exp.context)
+		}
+		if m.MaxCompletionTokens != exp.output {
+			t.Errorf("%s max_completion_tokens = %d, want %d", m.ID, m.MaxCompletionTokens, exp.output)
+		}
+		if m.Thinking == nil {
+			t.Errorf("%s thinking capability missing", m.ID)
+			continue
+		}
+		if m.Thinking.Max != exp.output || m.Thinking.ZeroAllowed != exp.zero {
+			t.Errorf("%s thinking = %+v, want max=%d zero_allowed=%v", m.ID, m.Thinking, exp.output, exp.zero)
+		}
+	}
+}
 func TestValidateModelsCatalog_Meta(t *testing.T) {
 	valid := &staticModelsJSON{
 		Meta: []*ModelInfo{
